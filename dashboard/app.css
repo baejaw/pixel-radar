@@ -85,6 +85,9 @@ dialog.detail::backdrop{background:rgba(0,0,0,.65)}
 .progress{height:12px;border:2px solid var(--line2)} .progress i{display:block;height:100%;background:var(--purple)}
 .peergrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;padding:12px}
 .peer{border:2px solid var(--line);padding:10px;background:var(--panel2)}
-.peer b{display:block}.peer span{color:var(--muted);font-size:12px}
+.peer b{display:block}.peer span{display:block;color:var(--muted);font-size:12px}
+.pad{padding:12px}
+.model table{font-size:12px}
+dialog.detail .eq b{white-space:nowrap}
 .foot{color:var(--muted);font-size:11px;margin-top:16px;text-transform:uppercase;letter-spacing:.05em}
 @media(max-width:900px){.lede{grid-template-columns:1fr}.lab{grid-template-columns:1fr}.shell{padding:12px}h1{font-size:21px}}

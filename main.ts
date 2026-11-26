@@ -1,8 +1,9 @@
 // PIXEL RADAR entrypoint (Node 22, standard library only).
-// Reads the sealed snapshot, scores every pre-token protocol with the comparables
-// model in lib/model.ts, writes board.json + data.js, copies dashboard/ and
-// screenshots/ to the output, and writes dossier.json last with the vendored
-// make.fun library, exactly as the gate rebuilds it.
+// Reads the sealed snapshot, prices every pre-token protocol with the fitted
+// model in lib/model.ts (ridge fit on the snapshot's live tokens, held-out
+// validated against the peer-median baseline), writes board.json + data.js,
+// copies dashboard/ and screenshots/ to the output, and writes dossier.json
+// last with the vendored make.fun library, exactly as the gate rebuilds it.
 // Local run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../token-radar-01-kit/input/snapshot.json
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -71,6 +72,6 @@ for (const name of shots) {
 
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 process.stdout.write(
-  `pixel radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} watchlist, ${board.length} rows (${radar.early_size} early, ${radar.live_size} live set aside), global peer multiple ${radar.global_multiple}x\n` +
+  `pixel radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} watchlist, ${board.length} rows (${radar.early_size} early, ${radar.live_size} live set aside), fit on ${radar.fit.fit_rows} live tokens (held-out median error ${radar.validation.fitted.median_ape_pct}% vs baseline ${radar.validation.baseline.median_ape_pct}%)\n` +
   `pixel radar: wrote board.json, data.js, dashboard/, screenshots/ (${shots.length}) and dossier.json to ${out}\n`,
 );
