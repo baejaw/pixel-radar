@@ -37,6 +37,11 @@
     return n;
   }
   function seg(score, white) { var s = el('span', { class: 'seg', 'aria-hidden': 'true' }); var filled = Math.round(score / 20); for (var i = 0; i < 5; i++) s.appendChild(el('i', { class: i < filled ? (white && i < 2 ? 'fw' : 'f') : '' })); return s; }
+  // Purple bars are the data language: vbar is the compact in-table form,
+  // pbar the full-width segmented form used in the stat cards. Grey = the
+  // baseline or a negative move; purple always marks the shipped model.
+  function vbar(pct, grey, w) { var b = el('span', { class: 'vbar' + (grey ? ' grey' : ''), 'aria-hidden': 'true' }); if (w) b.style.width = w + 'px'; b.appendChild(el('i', { style: 'width:' + clamp(Math.round(pct), 0, 100) + '%' })); return b; }
+  function pbar(pct, grey) { var b = el('span', { class: 'bar block' + (grey ? ' grey' : ''), 'aria-hidden': 'true' }); b.appendChild(el('i', { style: 'width:' + clamp(Math.round(pct), 0, 100) + '%' })); return b; }
 
   // Farm plan: the same derivation lib/model.ts writes into board.json -
   // category, first chain (and its gas tier), TVL tier and age decide every
@@ -138,12 +143,27 @@
       el('div', { class: 'top-meta' }, el('span', { text: 'Snapshot ' + DATA.as_of }), el('span', { text: 'DefiLlama index' }), el('span', { text: DATA.model_version }), el('span', { text: 'No network - data.js only' })));
   }
   function lede() {
-    function fact(label, value) { return el('div', { class: 'fact' }, el('span', { text: label }), el('b', null, value)); }
-    var v = DATA.validation;
+    var v = DATA.validation, f = DATA.fit;
+    function fact(label, value, viz, note) {
+      var d = el('div', { class: 'fact' }, el('span', { text: label }), el('b', { text: value }));
+      if (viz) d.appendChild(viz);
+      if (note) d.appendChild(el('span', { class: 'viz-note', text: note }));
+      return d;
+    }
+    var strip = el('span', { class: 'strip', 'aria-hidden': 'true' },
+      el('i', { class: 'w', style: 'width:' + (DATA.watchlist_size / DATA.board_size * 100).toFixed(1) + '%' }),
+      el('i', { class: 'p', style: 'width:' + (DATA.early_size / DATA.board_size * 100).toFixed(1) + '%' }));
+    var errs = el('div', { class: 'errs' },
+      el('div', { class: 'erow' }, el('span', { text: 'Fitted' }), pbar(v.fitted.median_ape_pct), el('span', { class: 'num', text: v.fitted.median_ape_pct + '%' })),
+      el('div', { class: 'erow' }, el('span', { text: 'Baseline' }), pbar(v.baseline.median_ape_pct, true), el('span', { class: 'num', text: v.baseline.median_ape_pct + '%' })));
     return el('section', { class: 'lede' },
       el('div', { class: 'intro' }, el('h1', { text: 'Token launch radar: ' + DATA.board_size + ' pre-token protocols, priced by a model fitted on the snapshot itself' }),
-        el('p', { text: 'No hand-set multiples: a ridge regression of log market cap on log TVL, 7-day growth, age, category and chain offsets was fitted on the ' + DATA.fit.fit_rows + ' protocols in this snapshot whose token already trades, then tested on held-out protocols it never saw - median error ' + v.fitted.median_ape_pct + '% against ' + v.baseline.median_ape_pct + '% for a peer-median model (Model check view has the full test). The board ranks every launch candidate at every TVL: all ' + DATA.watchlist_size + ' watchlist protocols plus ' + DATA.early_size + ' more, with ' + DATA.excluded_passthrough + ' pass-through products and ' + DATA.excluded_cex + ' exchanges set aside, not ranked as launches. Launch odds come from the snapshot\'s own base rates. A model claim, never a promise: a protocol records no token, which is not proof it will issue one.' })),
-      el('div', { class: 'facts' }, fact('Watchlist covered', DATA.watchlist_size + ' / ' + DATA.watchlist_size), fact('Board rows', String(DATA.board_size)), fact('Fitted on', DATA.fit.fit_rows + ' live tokens'), fact('Held-out median error', v.fitted.median_ape_pct + '%')));
+        el('p', { text: 'No hand-set multiples: a ridge regression of log market cap on log TVL, 7-day growth, age and category/chain offsets, fitted on the ' + f.fit_rows + ' snapshot protocols whose token already trades, then tested on held-out protocols it never saw - median error ' + v.fitted.median_ape_pct + '% against ' + v.baseline.median_ape_pct + '% for a peer-median model (full test in Model check). The board ranks every launch candidate at every TVL: all ' + DATA.watchlist_size + ' watchlist protocols plus ' + DATA.early_size + ' more; ' + DATA.excluded_passthrough + ' pass-through products and ' + DATA.excluded_cex + ' exchanges are set aside, not ranked as launches. Launch odds come from the snapshot\'s own base rates. A model claim, never a promise: a protocol records no token, which is not proof it will issue one.' })),
+      el('div', { class: 'facts' },
+        fact('Watchlist covered', DATA.watchlist_size + ' / ' + DATA.watchlist_size, pbar(100), 'every watchlist protocol is ranked'),
+        fact('Board rows', String(DATA.board_size), strip, DATA.watchlist_size + ' watchlist (white) - ' + DATA.early_size + ' early (purple)'),
+        fact('Fitted on', f.fit_rows + ' live tokens', pbar(f.fit_rows / f.candidate_rows * 100), f.fit_rows + ' fitted - ' + f.dropped_rows + ' outliers dropped of ' + f.candidate_rows + ' candidates'),
+        fact('Held-out median error', v.fitted.median_ape_pct + '%', errs, 'lower is better - held-out protocols')));
   }
   function selectField(label, id, values, current, onchange) {
     var s = el('select', { id: id, 'aria-label': label }, values.map(function (v) { return el('option', { value: v[0], text: v[1], selected: v[0] === current ? 'selected' : null }); }));
@@ -188,6 +208,7 @@
     var c = document.getElementById('count'); if (c) c.textContent = list.length + ' rows shown - ' + compare.length + '/3 in compare';
     if (!list.length) return el('div', { class: 'panel' }, el('div', { class: 'empty' }, el('h2', { text: 'No protocol matches' }), el('p', { text: 'Clear the search or pick another filter.' }), el('button', { type: 'button', text: 'Reset all', onclick: function () { preset('all'); } })));
     var max = Math.max.apply(null, list.map(function (r) { return r.implied_value_usd; })) || 1;
+    var logMaxEv = Math.log10(1 + Math.max.apply(null, DATA.rows.map(function (r) { return r.opportunity_usd; })));
     var tb = el('tbody');
     list.forEach(function (r) {
       var star = el('button', { type: 'button', class: 'mini' + (stars.has(r.slug) ? ' on' : ''), text: stars.has(r.slug) ? 'FARMING' : '+ FARM', onclick: function (e) { e.stopPropagation(); if (stars.has(r.slug)) stars.delete(r.slug); else stars.add(r.slug); render(); } });
@@ -197,16 +218,16 @@
         el('td', null, el('span', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' - ' + (r.chains || []).slice(0, 2).join(', ') + (r.pass_through ? ' - PASS-THROUGH' : '') }))),
         el('td', null, el('span', { class: 'badge' + (r.in_watchlist ? ' w' : ''), text: r.in_watchlist ? 'WATCHLIST' : 'EARLY' })),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
-        el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
+        el('td', { class: 'num' }, r.change_7d === null ? 'n/a' : [vbar(Math.sqrt(Math.min(Math.abs(r.change_7d), 100)) * 10, r.change_7d < 0), el('span', { class: r.change_7d >= 0 ? 'pos' : 'neg', text: fmtPct(r.change_7d) })]),
         el('td', null, seg(r.farm_score), el('span', { class: 'num', text: String(r.farm_score) })),
         el('td', { class: 'num', text: r.confidence + '%' }),
-        el('td', null, seg(r.odds, true), el('span', { class: 'num', text: r.odds + '%' })),
-        el('td', { class: 'num', text: fmtUsd(r.opportunity_usd) }),
+        el('td', null, vbar(r.odds), el('span', { class: 'num', text: r.odds + '%' })),
+        el('td', null, vbar(Math.log10(1 + r.opportunity_usd) / logMaxEv * 100), el('span', { class: 'num', text: fmtUsd(r.opportunity_usd) })),
         el('td', null, el('span', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(4, Math.round(r.implied_value_usd / max * 100)) + '%' })), el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })),
         el('td', null, star, ' ', cmp)));
     });
     return el('div', { class: 'panel' }, el('div', { class: 'table-wrap' }, el('table', null,
-      el('caption', { text: 'Ranked by implied value (fitted model). Odds = launch odds from category base rates; EV index = implied x odds x confidence. FARM saves a protocol to your farm list, VS adds it to the compare tray (max 3). Select a row for its fitted breakdown and farm plan.' }),
+      el('caption', { text: 'Ranked by implied value (fitted model). Odds = launch odds from category base rates; EV index = implied x odds x confidence. Purple bars scale the odds, the EV index (log scale) and the size of the 7d move (grey when negative). FARM saves a protocol to your farm list, VS adds it to the compare tray (max 3). Select a row for its fitted breakdown and farm plan.' }),
       el('thead', null, el('tr', null, sortHead('implied', '#'), sortHead('name', 'Protocol'), el('th', { text: 'Tier' }), sortHead('tvl', 'TVL'), sortHead('growth', '7d'), sortHead('farm', 'Farm score'), sortHead('conf', 'Conf.'), sortHead('odds', 'Odds'), sortHead('ev', 'EV index'), sortHead('implied', 'Implied value'), el('th', { text: 'Actions' }))), tb)));
   }
   function currentView() { return state.tab === 'pre' ? boardTable() : state.tab === 'peers' ? peersView() : state.tab === 'live' ? liveView() : modelView(); }
@@ -222,7 +243,8 @@
     return el('div', { class: 'panel' }, el('div', { class: 'table-wrap' }, el('table', null, el('caption', { text: 'Live tokens are evidence, not entries: the model is fitted on them, and they are never mixed into the pre-token ranking.' }), el('thead', null, el('tr', null, el('th', { text: 'Protocol' }), el('th', { text: 'TVL' }), el('th', { text: 'Market cap' }), el('th', { text: 'Mcap/TVL' }), el('th', { text: '7d' }), el('th', { text: 'Token' }))), tb)));
   }
   function statRow(label, s, chosen) {
-    return el('tr', chosen ? { class: 'sel' } : null, el('td', { text: label + (chosen ? ' - SHIPPED' : '') }), el('td', { class: 'num', text: s.median_ape_pct + '%' }), el('td', { class: 'num', text: s.mean_ape_pct + '%' }), el('td', { class: 'num', text: String(s.r2_log) }));
+    var vv = DATA.validation, maxMed = Math.max(vv.fitted.median_ape_pct, vv.baseline.median_ape_pct, vv.blend.median_ape_pct);
+    return el('tr', chosen ? { class: 'sel' } : null, el('td', { text: label + (chosen ? ' - SHIPPED' : '') }), el('td', { class: 'num' }, vbar(s.median_ape_pct / maxMed * 100, !chosen, 90), el('span', { text: s.median_ape_pct + '%' })), el('td', { class: 'num', text: s.mean_ape_pct + '%' }), el('td', { class: 'num', text: String(s.r2_log) }));
   }
   function modelView() {
     var f = DATA.fit, v = DATA.validation;
