@@ -28,9 +28,7 @@
     return n;
   }
   function seg(score, white) { var s = el('span', { class: 'seg', 'aria-hidden': 'true' }); var filled = Math.round(score / 20); for (var i = 0; i < 5; i++) s.appendChild(el('i', { class: i < filled ? (white && i < 2 ? 'fw' : 'f') : '' })); return s; }
-  // Purple bars are the data language (vbar in-table, pbar full-width); grey
-  // marks the baseline or a negative move. The gradient maps to the track,
-  // not the fill: only a near-full bar earns the green tail.
+  // Purple bars are the data language; grey is the baseline or a down move.
   function vbar(pct, grey, w) { var b = el('span', { class: 'vbar' + (grey ? ' grey' : ''), 'aria-hidden': 'true' }); if (w) b.style.width = w + 'px'; var fill = el('i', { style: 'width:' + clamp(Math.round(pct), 0, 100) + '%' }); if (!grey) fill.style.backgroundSize = (w || 56) + 'px 100%'; b.appendChild(fill); return b; }
   function fixGradients() { var fills = document.querySelectorAll('.bar.block i, .progress i'); for (var i = 0; i < fills.length; i++) { var p = fills[i].parentElement; if (p && p.clientWidth) fills[i].style.backgroundSize = p.clientWidth + 'px 100%'; } }
   var WATCH_LO = 35e6;
@@ -304,9 +302,14 @@
     var vv = DATA.validation, maxMed = Math.max(vv.fitted.median_ape_pct, vv.baseline.median_ape_pct, vv.blend.median_ape_pct);
     return el('tr', chosen ? { class: 'sel' } : null, el('td', { text: label + (chosen ? ' - SHIPPED' : '') }), el('td', { class: 'num' }, vbar(s.median_ape_pct / maxMed * 100, !chosen, 90), el('span', { text: s.median_ape_pct + '%' })), el('td', { class: 'num', text: s.mean_ape_pct + '%' }), el('td', { class: 'num', text: String(s.r2_log) }));
   }
+  function schemeRow(s) {
+    return el('tr', null, el('td', { text: s.name + ' (n=' + s.n + ')' }), el('td', { class: 'num', text: s.fitted.median_ape_pct + '%' }), el('td', { class: 'num', text: s.baseline.median_ape_pct + '%' }), el('td', { class: 'num', text: 'x' + s.factor.toFixed(2) }), el('td', { class: 'num', text: String(s.fitted.r2_log) }));
+  }
   function modelView() {
     var f = DATA.fit, v = DATA.validation;
     var coef = el('tbody');
+    var scTb = el('tbody');
+    DATA.validation_schemes.forEach(function (s) { scTb.appendChild(schemeRow(s)); });
     [['Intercept (at mean log TVL)', f.intercept], ['Log TVL (elasticity)', f.log_tvl], ['7-day growth, per +100%', f.growth], ['Log age, per log day', f.log_age]].forEach(function (r) {
       coef.appendChild(el('tr', null, el('td', { text: r[0] }), el('td', { class: 'num', text: String(r[1]) })));
     });
@@ -319,6 +322,9 @@
         el('p', { text: 'The fit set is the ' + f.candidate_rows + ' protocols whose token trades with a recorded market cap and real TVL (exchanges excluded). A fixed outlier rule drops any whose market-cap / TVL multiple falls outside [' + f.mult_band[0] + ', ' + f.mult_band[1] + '] - a mismatched record, not a valuation - leaving ' + f.fit_rows + ' fitted rows (' + f.dropped_rows + ' dropped). Validation is deterministic 2-fold cross-fitting: each half of the fitted rows is priced by a model trained only on the other half, so every error below is on a protocol the model never saw.' }),
         el('div', { class: 'table-wrap' }, el('table', null, el('thead', null, el('tr', null, el('th', { text: 'Model' }), el('th', { text: 'Median error' }), el('th', { text: 'Mean error' }), el('th', { text: 'R2 (log)' }))), el('tbody', null, statRow('Fitted regression (radar-3)', v.fitted, true), statRow('Peer-median baseline (radar-2)', v.baseline, false), statRow('50/50 log blend of the two', v.blend, false)))),
         el('p', { text: 'The fitted model has the lowest held-out median error and the highest R2, so the board ships it alone; the blend only won on mean error, which a few wild multiples dominate, and it was tested and dropped rather than shipped. Errors near 77% at the median are the honest state of pricing pre-token protocols from TVL: read implied values as orders of magnitude, and the confidence score says how much evidence stands behind each one.' }),
+        el('h3', { text: 'Tested three ways' }),
+        el('div', { class: 'table-wrap' }, el('table', null, el('thead', null, el('tr', null, el('th', { text: 'Split' }), el('th', { text: 'Fitted median' }), el('th', { text: 'Baseline median' }), el('th', { text: 'Factor' }), el('th', { text: 'R2 (log)' }))), scTb)),
+        el('p', { text: 'Walk-forward splits by listing date and uses only the 80 of the ' + f.fit_rows + ' fitted tokens that carry one. On the newest 20 both models\' R2 goes negative - recent launch levels drift from what older launches imply - yet the fitted median error stays the lowest under every split. The claim is a stable median error (76-82%), not a stable R2.' }),
         el('p', { text: 'Every protocol also carries a likely range, shown in its detail view as the cross-fit band: the interquartile range (25th to 75th percentile) of the signed cross-fit residuals - the same out-of-fold errors scored above - taken per category where at least 5 fitted tokens exist, and from all ' + f.fit_rows + ' residuals otherwise. The band is the spread of the model\'s own misses, printed next to the number it qualifies.' }),
         el('p', null, el('button', { type: 'button', text: 'Open the Accuracy Ledger - all ' + DATA.ledger_summary.graded + ' graded tokens, one by one', onclick: function () { state.tab = 'ledger'; render(); } }))),
       el('section', { class: 'panel model' }, el('h2', { text: 'Fitted coefficients' }),

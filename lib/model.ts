@@ -231,6 +231,13 @@ export interface Validation {
   blend: ValidationStats;
   chosen: string;
 }
+export interface ValidationScheme {
+  name: string;
+  n: number;
+  fitted: ValidationStats;
+  baseline: ValidationStats;
+  factor: number;
+}
 
 export interface RadarData {
   as_of: string;
@@ -249,6 +256,7 @@ export interface RadarData {
   median_implied_usd: number;
   fit: FitParams;
   validation: Validation;
+  validation_schemes: ValidationScheme[];
   farm_scenario: typeof FARM_SCENARIO;
   categories: CategoryInfo[];
   chain_offsets: ChainOffset[];
@@ -499,6 +507,70 @@ export function validate(snapshot: Snapshot): Validation {
     }
   }
   return { folds: 2, rows: rows.length, fitted: statsOf(fitted), baseline: statsOf(baseline), blend: statsOf(blend), chosen: 'fitted' };
+}
+
+// ---------------------------------------------------------------------------
+// The same test, cut three more ways, so the headline 2-fold number is not
+// the only split the model has ever faced: leave-one-out over the whole fit
+// set, and walk-forward by listing date (train on the past, price the
+// future) at two cut points. Every scheme scores the fitted model against
+// the same peer-median baseline on identical train/test splits; the factor
+// is the baseline's raw median error divided by the fitted model's.
+// Walk-forward can only use the fit rows that carry a listing date.
+// ---------------------------------------------------------------------------
+
+function splitPairs(train: SnapshotProtocol[], test: SnapshotProtocol[], asOf: string): { f: [number, number][]; b: [number, number][] } {
+  const model = ridgeFit(train, asOf);
+  const peers = peerTable(train);
+  const f: [number, number][] = [];
+  const b: [number, number][] = [];
+  for (const p of test) {
+    f.push([model.predict(p), p.mcap_usd!]);
+    b.push([baselineLog(p, asOf, peers), p.mcap_usd!]);
+  }
+  return { f, b };
+}
+
+function rawMedianApe(pairs: [number, number][]): number {
+  return median(pairs.map(([lp, m]) => (Math.abs(Math.exp(lp) - m) / m) * 100));
+}
+
+function schemeOf(name: string, f: [number, number][], b: [number, number][]): ValidationScheme {
+  return { name, n: f.length, fitted: statsOf(f), baseline: statsOf(b), factor: round2(rawMedianApe(b) / rawMedianApe(f)) };
+}
+
+export function validationSchemes(snapshot: Snapshot): ValidationScheme[] {
+  const { rows } = fitSet(snapshot);
+  const asOf = snapshot.as_of;
+  const schemes: ValidationScheme[] = [];
+  {
+    const F: [number, number][] = [];
+    const B: [number, number][] = [];
+    for (let fold = 0; fold < 2; fold++) {
+      const { f, b } = splitPairs(rows.filter((p) => fnv1a(p.slug) % 2 !== fold), rows.filter((p) => fnv1a(p.slug) % 2 === fold), asOf);
+      F.push(...f);
+      B.push(...b);
+    }
+    schemes.push(schemeOf('2-fold cross-fit', F, B));
+  }
+  {
+    const F: [number, number][] = [];
+    const B: [number, number][] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const { f, b } = splitPairs(rows.filter((_, j) => j !== i), [rows[i]!], asOf);
+      F.push(...f);
+      B.push(...b);
+    }
+    schemes.push(schemeOf('Leave-one-out', F, B));
+  }
+  const dated = rows.filter((p) => p.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : 1));
+  for (const [name, frac] of [['Walk-forward 50/50', 0.5], ['Walk-forward 75/25', 0.75]] as [string, number][]) {
+    const cut = Math.floor(dated.length * frac);
+    const { f, b } = splitPairs(dated.slice(0, cut), dated.slice(cut), asOf);
+    schemes.push(schemeOf(name, f, b));
+  }
+  return schemes;
 }
 
 // ---------------------------------------------------------------------------
@@ -956,7 +1028,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     excluded_passthrough: snapshot.protocols.filter((p) => isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name) && PASS_CATEGORIES.has(p.category ?? '')).length,
     total_implied_usd: board.reduce((sum, r) => sum + r.implied_value_usd, 0),
     median_implied_usd: impliedSorted.length ? impliedSorted[Math.floor(impliedSorted.length / 2)]! : 0,
-    fit, validation, farm_scenario: FARM_SCENARIO, categories,
+    fit, validation, validation_schemes: validationSchemes(snapshot), farm_scenario: FARM_SCENARIO, categories,
     chain_offsets: fit.chain_offsets,
     rows: scored.map((s, i) => {
       const band = bands.byCategory.get(s.p.category ?? 'Other') ?? bands.global;
