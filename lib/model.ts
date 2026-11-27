@@ -30,7 +30,8 @@
 //                  the two. The fitted model won the held-out median error and
 //                  the log-scale R-squared in both the 2-fold and a 5-fold
 //                  cross-check, so the board prices with the fitted model alone;
-//                  the blend survives only as a Model Lab slider. The numbers
+//                  the blend was tested on the same folds and dropped - it won
+//                  only the mean error, which a few wild multiples dominate. The numbers
 //                  themselves ship in data.js and are printed in the dashboard's
 //                  Model check view: nothing about the fit is asserted that the
 //                  held-out rows do not show.
@@ -156,6 +157,12 @@ export interface RadarRow {
   capital_usd: number;
   hold_days: number;
   in_watchlist: boolean;
+  launch_window: string;
+  band_lo_usd: number;
+  band_hi_usd: number;
+  net_usd: number;
+  net_per_hour: number;
+  verdict: string;
 }
 
 export interface LiveRow {
@@ -177,6 +184,11 @@ export interface CategoryInfo {
   live_count: number;
   board_count: number;
   base_rate_pct: number;
+  rap_median: number | null;
+  rap_best_name: string | null;
+  rap_best_multiple: number | null;
+  rap_worst_name: string | null;
+  rap_worst_multiple: number | null;
 }
 
 export interface ChainOffset { chain: string; peers: number; offset: number; }
@@ -196,6 +208,19 @@ export interface FitParams {
   category_offsets: { category: string; peers: number; offset: number }[];
   chain_offsets: ChainOffset[];
 }
+
+export interface LedgerRow {
+  slug: string;
+  name: string;
+  category: string | null;
+  tvl_usd: number;
+  actual_usd: number;
+  predicted_usd: number;
+  ape_pct: number;
+  verdict: 'WITHIN 2X' | '2-5X' | 'OVER 5X';
+}
+
+export interface LedgerSummary { graded: number; within_2x_pct: number; median_ape_pct: number; }
 
 export interface ValidationStats { median_ape_pct: number; mean_ape_pct: number; r2_log: number; }
 export interface Validation {
@@ -224,10 +249,13 @@ export interface RadarData {
   median_implied_usd: number;
   fit: FitParams;
   validation: Validation;
+  farm_scenario: typeof FARM_SCENARIO;
   categories: CategoryInfo[];
   chain_offsets: ChainOffset[];
   rows: RadarRow[];
   live: LiveRow[];
+  ledger: LedgerRow[];
+  ledger_summary: LedgerSummary;
 }
 
 export class SnapshotError extends Error {
@@ -236,6 +264,7 @@ export class SnapshotError extends Error {
 
 const DAY_MS = 86_400_000;
 const round1 = (n: number): number => Math.round(n * 10) / 10;
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round3 = (n: number): number => Math.round(n * 1e3) / 1e3;
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
@@ -399,7 +428,7 @@ export function publishedFit(snapshot: Snapshot): { params: FitParams; predictLo
 }
 
 // ---------------------------------------------------------------------------
-// The radar-2 baseline (kept as the validation yardstick and the Lab's blend)
+// The radar-2 baseline (kept as the validation yardstick and the tested blend)
 // ---------------------------------------------------------------------------
 
 export interface PeerTable { global: number; byCategory: Map<string, { median: number; count: number }>; }
@@ -470,6 +499,114 @@ export function validate(snapshot: Snapshot): Validation {
     }
   }
   return { folds: 2, rows: rows.length, fitted: statsOf(fitted), baseline: statsOf(baseline), blend: statsOf(blend), chosen: 'fitted' };
+}
+
+// ---------------------------------------------------------------------------
+// Accuracy Ledger: the same cross-fitting as validate(), kept per token, so
+// the radar grades itself in public - every fitted row priced out-of-fold,
+// its prediction set against the market cap the snapshot actually recorded.
+// ---------------------------------------------------------------------------
+
+/** Every fitted row priced out-of-fold: the one cross-fitting run the ledger,
+ *  the validation stats and the value bands all read from, so the three can
+ *  never disagree with each other. */
+export function crossFitPredictions(snapshot: Snapshot): { p: SnapshotProtocol; lp: number }[] {
+  const { rows } = fitSet(snapshot);
+  const out: { p: SnapshotProtocol; lp: number }[] = [];
+  for (let fold = 0; fold < 2; fold++) {
+    const train = rows.filter((p) => fnv1a(p.slug) % 2 !== fold);
+    const test = rows.filter((p) => fnv1a(p.slug) % 2 === fold);
+    const model = ridgeFit(train, snapshot.as_of);
+    for (const p of test) out.push({ p, lp: model.predict(p) });
+  }
+  return out;
+}
+
+export function crossFitLedger(snapshot: Snapshot): { ledger: LedgerRow[]; summary: LedgerSummary } {
+  const ledger: LedgerRow[] = [];
+  const pairs: [number, number][] = [];
+  let within = 0;
+  for (const { p, lp } of crossFitPredictions(snapshot)) {
+    const raw = Math.exp(lp);
+    const actual = p.mcap_usd!;
+    const ape = (Math.abs(raw - actual) / actual) * 100;
+    const fold2 = Math.max(raw / actual, actual / raw);
+    const verdict = fold2 <= 2 ? 'WITHIN 2X' : fold2 <= 5 ? '2-5X' : 'OVER 5X';
+    if (verdict === 'WITHIN 2X') within++;
+    pairs.push([lp, actual]);
+    ledger.push({
+      slug: p.slug, name: p.name, category: p.category, tvl_usd: p.tvl_usd,
+      actual_usd: actual, predicted_usd: Math.max(1, Math.round(raw)), ape_pct: round1(ape), verdict,
+    });
+  }
+  ledger.sort((a, b) => a.ape_pct - b.ape_pct || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  return {
+    ledger,
+    summary: {
+      graded: ledger.length,
+      within_2x_pct: round1((within / ledger.length) * 100),
+      // statsOf over the identical pairs validate() scores, so this median is
+      // the published held-out figure by construction, not a second estimate.
+      median_ape_pct: statsOf(pairs).median_ape_pct,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Value bands: a likely range for every implied value, from the SAME cross-fit
+// residuals the ledger and validation publish - the signed log residuals
+// (log actual - log predicted) of the out-of-fold run. Per category, the
+// interquartile (p25-p75) multiplicative factors, where the category holds at
+// least 5 fitted tokens; the global factors otherwise. The band is the spread
+// of the model's own out-of-sample misses, never a promise.
+// ---------------------------------------------------------------------------
+
+function quantile(sortedAsc: number[], q: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const pos = q * (sortedAsc.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sortedAsc[lo]!;
+  return sortedAsc[lo]! + (sortedAsc[hi]! - sortedAsc[lo]!) * (pos - lo);
+}
+
+export interface BandFactors { lo: number; hi: number; }
+
+export function crossFitBands(snapshot: Snapshot): { byCategory: Map<string, BandFactors>; global: BandFactors } {
+  const all: number[] = [];
+  const byCat = new Map<string, number[]>();
+  for (const { p, lp } of crossFitPredictions(snapshot)) {
+    const r = Math.log(p.mcap_usd!) - lp;
+    all.push(r);
+    const key = p.category ?? 'Other';
+    const arr = byCat.get(key) ?? [];
+    arr.push(r);
+    byCat.set(key, arr);
+  }
+  const factors = (rs: number[]): BandFactors => {
+    const s = [...rs].sort((a, b) => a - b);
+    return { lo: Math.exp(quantile(s, 0.25)), hi: Math.exp(quantile(s, 0.75)) };
+  };
+  const byCategory = new Map<string, BandFactors>();
+  for (const [cat, rs] of byCat) if (rs.length >= 5) byCategory.set(cat, factors(rs));
+  return { byCategory, global: factors(all) };
+}
+
+// ---------------------------------------------------------------------------
+// Launch window: an actuarial-style bucket for time-to-token, from the same
+// signals as the odds (category base rate is already inside odds), plus TVL
+// tier, age and 7-day growth shifts. A heuristic range, never a date.
+// ---------------------------------------------------------------------------
+
+const LAUNCH_BUCKETS = ['~1-4 MO', '~3-9 MO', '~6-12 MO', '~9-18 MO', '~12-24 MO', '~18-36 MO'];
+
+export function launchWindowFor(odds: number, tvlUsd: number, age: number | null, change7d: number | null): string {
+  let idx = odds >= 75 ? 0 : odds >= 60 ? 1 : odds >= 45 ? 2 : odds >= 30 ? 3 : odds >= 15 ? 4 : 5;
+  if (tvlUsd >= 1_000_000_000) idx -= 1;
+  if (age !== null && age < 90) idx += 1;
+  if (change7d !== null && change7d >= 25) idx -= 1;
+  if (change7d !== null && change7d <= -25) idx += 1;
+  return LAUNCH_BUCKETS[clamp(idx, 0, LAUNCH_BUCKETS.length - 1)]!;
 }
 
 // ---------------------------------------------------------------------------
@@ -587,12 +724,69 @@ function secondActionFor(p: SnapshotProtocol, chain: string): string {
   return `Use one second feature of ${name} on ${chain}, such as a vote, a claim page or a referral-free direct action, once.`;
 }
 
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
+// ---------------------------------------------------------------------------
+// Plan economics and the netted verdict. The scenario is stated, printed in
+// every plan, and identical everywhere it appears: farmer rewards total
+// 0.5% of the implied FDV, split across 500 farmers. One farmer's gross is
+// weighted by the launch odds; the plan's own gas and fees (setup plus the
+// weekly maintenance over the hold) come off; working capital is NOT a cost
+// and is never subtracted. The net is divided by the plan's hands-on time:
+// FARM at $25/h or more, THIN from $5/h, SKIP below that.
+// ---------------------------------------------------------------------------
+
+export const FARM_SCENARIO = { reward_share_pct: 0.5, farmers: 500, farm_per_hour: 25, thin_per_hour: 5 };
+
+export function fmtInt(n: number): string {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** Display format shared by the board's step text and the dashboard drawer,
+ *  so the two print the same dollar figures: whole dollars at $100+, one
+ *  decimal at $10+, two below that, thousands grouped. */
+export function fmtMoney(n: number): string {
+  const neg = n < 0;
+  const a = Math.abs(n);
+  let s: string;
+  if (a >= 100) s = String(Math.round(a));
+  else if (a >= 10) s = (Math.round(a * 10) / 10).toFixed(1).replace(/\.0$/, '');
+  else s = (Math.round(a * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
+  return (neg ? '-$' : '$') + s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+export interface PlanEconomics {
+  g1: number; g2: number; g3: number; g4: number;
+  setupGas: number; weeks: number; planGas: number;
+  setupMins: number; planMins: number; hours: number;
+}
+
+export function planEconomics(p: SnapshotProtocol, age: number | null): PlanEconomics {
+  const high = gasTier(chainOf(p)) === 'high';
+  const g1 = high ? 3 : 1, g2 = high ? 8 : 2, g3 = high ? 5 : 2, g4 = high ? 4 : 1;
+  const hold = holdDaysFor(age);
+  const weeks = Math.max(1, Math.ceil(hold / 7));
+  const setupGas = g1 + g2 + g3;
+  const setupMins = 5 + 15 + 10 + 10 + 5;
+  const planMins = setupMins + 10 * weeks;
+  return { g1, g2, g3, g4, setupGas, weeks, planGas: setupGas + g4 * weeks, setupMins, planMins, hours: planMins / 60 };
+}
+
+export interface FarmVerdict { gross: number; expected: number; net: number; perHour: number; verdict: 'FARM' | 'THIN' | 'SKIP'; }
+
+export function farmVerdict(implied: number, odds: number, econ: PlanEconomics): FarmVerdict {
+  const gross = (FARM_SCENARIO.reward_share_pct / 100) * implied / FARM_SCENARIO.farmers;
+  const expected = gross * (odds / 100);
+  const net = expected - econ.planGas;
+  const perHour = net / econ.hours;
+  const verdict = perHour >= FARM_SCENARIO.farm_per_hour ? 'FARM' : perHour >= FARM_SCENARIO.thin_per_hour ? 'THIN' : 'SKIP';
+  return { gross, expected, net, perHour, verdict };
+}
+
+export function farmSteps(p: SnapshotProtocol, age: number | null, ctx?: { implied: number; odds: number }): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const high = gasTier(chain) === 'high';
-  const g1 = high ? 3 : 1, g2 = high ? 8 : 2, g3 = high ? 5 : 2, g4 = high ? 4 : 1;
+  const econ = planEconomics(p, age);
+  const g1 = econ.g1, g2 = econ.g2, g3 = econ.g3, g4 = econ.g4;
   const steps: FarmStep[] = [
     { text: `Use a fresh wallet that holds only the funds you plan to farm ${p.name} with, and keep its seed phrase offline.`, cost: `about $${g1} of gas for the first transaction on ${chain}`, time: '5 minutes', gas: g1, mins: 5 },
     { text: actionFor(p, capital, chain), cost: `$${capital} of capital and about $${g2} of gas on ${chain}`, time: '15 minutes to set up', gas: g2, mins: 15 },
@@ -602,10 +796,13 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     { text: `Open only the points or rewards page that ${p.name} itself publishes, check eligibility there, and never pay a third party to claim.`, cost: 'no fee to check, and never pay to claim', time: '10 minutes', gas: 0, mins: 10 },
     { text: `Log every ${p.name} transaction, date and balance in a farm log, set a stop rule for a TVL drop over 30%, and unwind if it triggers.`, cost: 'nothing but the log', time: '5 minutes to set up, 2 minutes a week', gas: 0, mins: 5 },
   ];
-  const setupGas = g1 + g2 + g3;
-  const setupMins = 5 + 15 + 10 + 10 + 5;
+  let totals = `Plan total for ${p.name}: $${capital} of working capital, about $${econ.setupGas} of setup gas plus $${g4} a week on ${chain}, ${econ.setupMins} minutes of setup and 10 minutes a week, held ${hold}+ days.`;
+  if (ctx) {
+    const v = farmVerdict(ctx.implied, ctx.odds, econ);
+    totals += ` Scenario (stated, not a promise): if farmer rewards total ${FARM_SCENARIO.reward_share_pct}% of the ${fmtMoney(ctx.implied)} implied FDV split across ${fmtInt(FARM_SCENARIO.farmers)} farmers, one farmer's gross is ${fmtMoney(v.gross)}; at ${ctx.odds}% launch odds the expected gross is ${fmtMoney(v.expected)}, and net of the plan's ${fmtMoney(econ.planGas)} of gas and fees that is ${fmtMoney(v.net)} - about ${fmtMoney(v.perHour)} per hands-on hour. Verdict: ${v.verdict}.`;
+  }
   steps.push({
-    text: `Plan total for ${p.name}: $${capital} of working capital, about $${setupGas} of gas to set up on ${chain} plus about $${g4} of gas a week to maintain, about ${setupMins} minutes of setup and 10 minutes a week, held at least ${hold} days.`,
+    text: totals,
     cost: 'no extra cost - this line is the total of the steps above', time: '2 minutes to read', gas: 0, mins: 2,
   });
   return steps;
@@ -712,9 +909,24 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const boardByCat = new Map<string, number>();
   for (const s of scored) boardByCat.set(s.p.category ?? 'Other', (boardByCat.get(s.p.category ?? 'Other') ?? 0) + 1);
   const offsetByCat = new Map(fit.category_offsets.map((o) => [o.category, o.offset]));
+  // Category rap sheet: the realized record of the category's launched fit
+  // peers (raw mcap/TVL ratios from the same cleaned fit set the Peer
+  // evidence view cites) - the snapshot holds no per-team track records.
+  const rapByCat = new Map<string, { name: string; ratio: number }[]>();
+  for (const p of set.rows) {
+    if (p.tvl_usd <= 0) continue;
+    const key = p.category ?? 'Other';
+    const arr = rapByCat.get(key) ?? [];
+    arr.push({ name: p.name, ratio: p.mcap_usd! / p.tvl_usd });
+    rapByCat.set(key, arr);
+  }
   const catNames = [...new Set([...boardByCat.keys(), ...offsetByCat.keys()])].sort();
   const categories: CategoryInfo[] = catNames.map((category) => {
     const cat = peers.byCategory.get(category);
+    const rap = rapByCat.get(category) ?? [];
+    const rapSorted = rap.slice().sort((a, b) => a.ratio - b.ratio);
+    const rapBest = rapSorted.length ? rapSorted[rapSorted.length - 1]! : null;
+    const rapWorst = rapSorted.length ? rapSorted[0]! : null;
     return {
       category,
       peers: cat?.count ?? 0,
@@ -723,8 +935,15 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       live_count: liveByCat.get(category) ?? 0,
       board_count: boardByCat.get(category) ?? 0,
       base_rate_pct: round1((tables.baseByCategory.get(category) ?? tables.globalBase) * 100),
+      rap_median: rap.length ? round3(median(rap.map((x) => x.ratio))) : null,
+      rap_best_name: rapBest ? rapBest.name : null,
+      rap_best_multiple: rapBest ? round3(rapBest.ratio) : null,
+      rap_worst_name: rapWorst ? rapWorst.name : null,
+      rap_worst_multiple: rapWorst ? round3(rapWorst.ratio) : null,
     };
   }).sort((a, b) => b.board_count - a.board_count || (a.category < b.category ? -1 : 1));
+  const { ledger, summary: ledgerSummary } = crossFitLedger(snapshot);
+  const bands = crossFitBands(snapshot);
   const impliedSorted = board.map((r) => r.implied_value_usd).sort((a, b) => a - b);
   const radar: RadarData = {
     as_of: snapshot.as_of, source: snapshot.source, floor_usd: snapshot.floor_usd,
@@ -737,18 +956,28 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     excluded_passthrough: snapshot.protocols.filter((p) => isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name) && PASS_CATEGORIES.has(p.category ?? '')).length,
     total_implied_usd: board.reduce((sum, r) => sum + r.implied_value_usd, 0),
     median_implied_usd: impliedSorted.length ? impliedSorted[Math.floor(impliedSorted.length / 2)]! : 0,
-    fit, validation, categories,
+    fit, validation, farm_scenario: FARM_SCENARIO, categories,
     chain_offsets: fit.chain_offsets,
-    rows: scored.map((s, i) => ({
-      rank: i + 1, slug: s.p.slug, name: s.p.name, category: s.p.category, chains: s.p.chains,
-      tvl_usd: s.p.tvl_usd, change_7d: s.p.change_7d, mcap_usd: s.p.mcap_usd, listed_at: s.p.listed_at,
-      age_days: s.age, implied_value_usd: s.implied, fit_log: s.fitLog, peer_log: s.peerLog,
-      growth_part: s.growthPart, fitted_multiple: s.fittedMultiple, peer_multiple: round4(s.peerMultiple),
-      peer_count: s.peerCount, odds: s.odds, base_rate_pct: s.baseRatePct, opportunity_usd: s.opportunity,
-      pass_through: s.passThrough, confidence: s.confidence, farm_score: s.farmScore, risk: s.risk,
-      capital_usd: s.capital, hold_days: holdDaysFor(s.age), in_watchlist: watch.has(s.p.slug),
-    })),
+    rows: scored.map((s, i) => {
+      const band = bands.byCategory.get(s.p.category ?? 'Other') ?? bands.global;
+      const fv = farmVerdict(s.implied, s.odds, planEconomics(s.p, s.age));
+      return {
+        rank: i + 1, slug: s.p.slug, name: s.p.name, category: s.p.category, chains: s.p.chains,
+        tvl_usd: s.p.tvl_usd, change_7d: s.p.change_7d, mcap_usd: s.p.mcap_usd, listed_at: s.p.listed_at,
+        age_days: s.age, implied_value_usd: s.implied, fit_log: s.fitLog, peer_log: s.peerLog,
+        growth_part: s.growthPart, fitted_multiple: s.fittedMultiple, peer_multiple: round4(s.peerMultiple),
+        peer_count: s.peerCount, odds: s.odds, base_rate_pct: s.baseRatePct, opportunity_usd: s.opportunity,
+        pass_through: s.passThrough, confidence: s.confidence, farm_score: s.farmScore, risk: s.risk,
+        capital_usd: s.capital, hold_days: holdDaysFor(s.age), in_watchlist: watch.has(s.p.slug),
+        launch_window: launchWindowFor(s.odds, s.p.tvl_usd, s.age, s.p.change_7d),
+        band_lo_usd: Math.min(s.implied, Math.round(s.implied * band.lo)),
+        band_hi_usd: Math.max(s.implied, Math.round(s.implied * band.hi)),
+        net_usd: round2(fv.net), net_per_hour: round2(fv.perHour), verdict: fv.verdict,
+      };
+    }),
     live,
+    ledger,
+    ledger_summary: ledgerSummary,
   };
   return { board, radar };
 }
@@ -769,7 +998,7 @@ function buildBoardFromScored(snapshot: Snapshot, scored: Scored[], peers: PeerT
       pass_through: s.passThrough, confidence: s.confidence, farm_score: s.farmScore,
       risk: s.risk, capital_usd: s.capital, age_days: s.age,
     },
-    farm_steps: farmSteps(s.p, s.age).map(stepText),
+    farm_steps: farmSteps(s.p, s.age, { implied: s.implied, odds: s.odds }).map(stepText),
   }));
 }
 
