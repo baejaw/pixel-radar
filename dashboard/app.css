@@ -1,9 +1,7 @@
-/* PIXEL RADAR theme: black, white, one purple. No radius, 2px rules, hard
-   shadows, monospace grid; mono for headings/numbers/labels, system sans for
-   body. Gradient: purple for three quarters, green (#14f195) in the last. */
+/* PIXEL RADAR theme:black, white, one purple;purple 3/4, green (#14f195) last 1/4. */
 :root{
-  --bg:#0d0d10; --panel:#15151a; --panel2:#1c1c22; --ink:#f4f4f1; --muted:#a7a7b0;
-  --line:#33333c; --line2:#4a4a55; --purple:#8b5cf6; --purple2:#c4b0ff; --deep:#241a45;
+  --bg:#0d0d10;--panel:#15151a;--panel2:#1c1c22;--ink:#f4f4f1;--muted:#a7a7b0;
+  --line:#33333c;--line2:#4a4a55;--purple:#8b5cf6;--purple2:#c4b0ff;--deep:#241a45;
   --green:#14f195;
   --grad:linear-gradient(90deg,var(--purple) 0%,var(--purple) 68%,#4f86e8 84%,var(--green) 100%);
   --font:"Courier New",ui-monospace,Menlo,Consolas,monospace;
@@ -30,10 +28,10 @@ button.on{background:var(--grad);border-color:var(--purple);color:#fff}
 .brand-name{font-size:19px;font-weight:700;letter-spacing:.14em}
 .brand-name b{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
 .top-meta{color:var(--muted);font-size:12px;display:flex;gap:14px;flex-wrap:wrap;text-transform:uppercase}
-.lede{display:grid;grid-template-columns:1.3fr .7fr;gap:12px;margin:12px 0}
+.lede{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
 .lede .intro{border:2px solid var(--line);background:var(--panel);padding:12px 14px}
 .lede p{color:var(--muted);margin-top:6px;max-width:72ch;font-family:var(--sans);font-size:13.5px;line-height:1.6}
-.facts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .fact{border:2px solid var(--line);background:var(--panel);padding:9px 11px;box-shadow:4px 4px 0 #000;display:flex;flex-direction:column;gap:5px}
 .fact span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
 .fact b{font-size:18px;line-height:1.15}
